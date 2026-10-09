@@ -79,6 +79,7 @@ regenerated (without losing your edits) when the code changes.
 | 🗺️ **Interactive diagram** | Components laid out in layers, with pan, zoom and a "zoom to step" camera |
 | ▶️ **Guided flows** | Play, pause, next, previous, restart, speed control, progress dots, keyboard shortcuts, deep links to any step |
 | 🔌 **Request tracing** | A `fetch`/`axios` call (including through a client with a literal `baseURL`) is linked to the server route that handles it, with evidence on both sides and a "Request: GET /x" tour |
+| ♻️ **Circular dependencies** | Components that import each other in a loop get their own tour, with one real loop per group and the import line that closes it. Type-only and lazy imports (`import type`, `import()`, `TYPE_CHECKING`, imports inside a function) are not counted |
 | 🔀 **Compare two revisions** | `owner/repo@v1...v2` marks components and relationships added, removed or changed, and narrates the difference |
 | 🗄️ **Infrastructure and data model** | Docker Compose services (with `depends_on` and the code each one is built from), Kubernetes manifests (workloads, the Services that select them, Ingress routes) and Terraform resources (with the references between them) and SQL / Prisma tables with their foreign keys become components too, each pointing at the file and line it came from, with a tour of each |
 | 🧩 **Monorepos** | One component per workspace package, or analyse a single folder (`owner/repo:apps/web`) |
@@ -300,6 +301,7 @@ viewer is a pure function of it.
 | C / C++ | ✅ | Quoted `#include`s through relative paths and CMake / Makefile include directories, `main` entry points |
 | Dart / Flutter | ✅ | `package:` imports of this repository's packages (monorepos included), relative imports, `export` and `part`, `pubspec.yaml` dependencies |
 | Swift | ✅ | `import` resolves to Swift Package Manager targets (`Sources/<Target>/`) declared in `Package.swift`; system frameworks and undeclared packages are dropped, `main.swift` and `@main` entry points |
+| Elixir | ✅ | `alias`, `import`, `require` and `use` (including `alias Foo.{A, B}` and `__MODULE__`) resolve to the file that defines the module, nested `defmodule`s included; `mix.exs` dependencies become external nodes only when a module of that name is imported; the OTP application, escript and Mix tasks are entry points |
 | Everything else | ➖ | Structure, manifests and dependencies only. **[Add yours!](#-help-wanted)** |
 
 Beyond code, two extra views are read when the files exist: **infrastructure** (services, `depends_on` and build contexts from `docker-compose.yml` / `compose.yaml`; Kubernetes manifests with selector and Ingress links; Terraform `resource` blocks with their references) and **data model** (tables and foreign keys from `CREATE TABLE` / `ALTER TABLE … FOREIGN KEY` in `.sql` files, models and `@relation`s from `schema.prisma`, and Django models — classes deriving `models.Model` and their `ForeignKey` / `OneToOneField` / `ManyToManyField` targets — in `models.py`; a migration history counts as one schema). SQLAlchemy, TypeORM, Kubernetes and Terraform are not read yet.
@@ -336,32 +338,14 @@ start without asking. Comment "I'll take this" and a maintainer will help you ge
 [**All help wanted →**](https://github.com/Kaushik2210/gitVisualise/labels/help%20wanted) &nbsp;·&nbsp;
 [**Start a discussion →**](https://github.com/Kaushik2210/gitVisualise/discussions)
 
-**🟢 Good first issues** (an afternoon each)
-
-- [#7](https://github.com/Kaushik2210/gitVisualise/issues/7) Add a demo GIF and screenshots to the README
-- [#42](https://github.com/Kaushik2210/gitVisualise/issues/42) CLI: `gitvisualise init` sets a repository up in one command
-- [#43](https://github.com/Kaushik2210/gitVisualise/issues/43) A community gallery of tours, added by pull request
-- [#44](https://github.com/Kaushik2210/gitVisualise/issues/44) Viewer: a "?" keyboard shortcuts overlay
-- [#45](https://github.com/Kaushik2210/gitVisualise/issues/45) Viewer: a colour-blind-safe palette option
-
-**🟡 Intermediate**
-
-- [#46](https://github.com/Kaushik2210/gitVisualise/issues/46) Export the whole tour as a printable document
-- [#47](https://github.com/Kaushik2210/gitVisualise/issues/47) Language support: Swift import graph
-- [#48](https://github.com/Kaushik2210/gitVisualise/issues/48) Language support: Scala
-- [#49](https://github.com/Kaushik2210/gitVisualise/issues/49) Data model: read ORM models from application code
-- [#50](https://github.com/Kaushik2210/gitVisualise/issues/50) Request tracing: read routes from OpenAPI documents
-
-**🔴 Ambitious** (discuss the design first)
-
-- [#14](https://github.com/Kaushik2210/gitVisualise/issues/14) Sign in with GitHub to list private repositories
+_Every scoped issue is done. Open one to propose the next._
 
 The full plan, grouped into milestones, is in [ROADMAP.md](ROADMAP.md).
 
 <details>
-<summary><b>✅ Already shipped from this list</b> (41 issues closed)</summary>
+<summary><b>✅ Already shipped from this list</b> (56 issues closed)</summary>
 
-Closed so far: #1, #2, #3, #4, #5, #6, #8, #9, #10, #11, #12, #13, #15, #16, #20, #21, #22, #23, #24, #26, #27, #28, #29, #30, #31, #32, #33, #34, #35, #36, #37, #38, #39, #40. The changelog says what each one delivered.
+Closed so far: #1, #2, #3, #4, #5, #6, #7, #8, #9, #10, #11, #12, #13, #14, #15, #16, #20, #21, #22, #23, #24, #26, #27, #28, #29, #30, #31, #32, #33, #34, #35, #36, #37, #38, #39, #40, #42, #43, #44, #45, #46, #47, #48, #49, #50, #51, #52, #53, #54, #55, #56, #57, #69, #70, #71, #72
 
 </details>
 

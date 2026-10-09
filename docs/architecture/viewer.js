@@ -48,6 +48,14 @@
   // read as the same colour to red-green colour blindness).
   var SAFE_COLORS = ['#0072B2', '#E69F00', '#009E73', '#CC79A7', '#D55E00', '#56B4E9', '#F0E442', '#8C8C8C'];
   var SAFE_ORDER = ['entry', 'ui', 'api', 'service', 'data', 'util', 'config', 'module', 'test'];
+  // Circular dependencies: every component and relationship named by a step of the "cycles" flow.
+  var loopNodes = {}, loopEdges = {};
+  flows.forEach(function (f) {
+    if (f.id !== 'cycles') return;
+    f.steps.forEach(function (st) { (st.nodes || []).forEach(function (id) { loopNodes[id] = true; }); (st.edges || []).forEach(function (id) { loopEdges[id] = true; }); });
+  });
+  var hasLoops = Object.keys(loopNodes).length > 0;
+  var loopsOn = hasLoops && store('loops') === '1';
   var PALETTES = ['default', 'cb'];
   var palette = PALETTES.indexOf(store('palette')) >= 0 ? store('palette') : 'default';
   function kindColor(kind) {
@@ -223,7 +231,7 @@
       var a = boxes[e.from], b = boxes[e.to];
       if (!a || !b) return;
       var geo = edgeGeom(a, b);
-      var g = s('g', { class: (e.kind === 'http' ? 'edge k-http' : 'edge') + diffClass(e) + (isHidden(e.from) && isHidden(e.to) && laneKeyOf(byId[e.from]) === laneKeyOf(byId[e.to]) ? ' lane-hidden' : ''), 'data-id': e.id });
+      var g = s('g', { class: (e.kind === 'http' ? 'edge k-http' : 'edge') + diffClass(e) + (loopsOn && loopEdges[e.id] ? ' in-loop' : '') + (isHidden(e.from) && isHidden(e.to) && laneKeyOf(byId[e.from]) === laneKeyOf(byId[e.to]) ? ' lane-hidden' : ''), 'data-id': e.id });
       g.appendChild(s('title', {}, e.label ? (byId[e.from].label + ' → ' + byId[e.to].label + ': ' + e.label) : ''));
       g.appendChild(s('path', { d: geo.d, class: 'hit' }));
       g.appendChild(s('path', { d: geo.d, class: 'line' }));
@@ -232,12 +240,12 @@
     });
     nodes.forEach(function (n) {
       var b = boxes[n.id];
-      var g = s('g', { class: 'node' + diffClass(n) + (isHidden(n.id) ? ' lane-hidden' : ''), transform: 'translate(' + b.x + ',' + b.y + ')', tabindex: isHidden(n.id) ? -1 : 0, role: 'button', 'aria-label': n.label + ', ' + n.kind + '. ' + (n.summary || ''), 'data-id': n.id, style: '--kc:' + kindColor(n.kind) });
+      var g = s('g', { class: 'node' + diffClass(n) + (loopsOn && loopNodes[n.id] ? ' in-loop' : '') + (isHidden(n.id) ? ' lane-hidden' : ''), transform: 'translate(' + b.x + ',' + b.y + ')', tabindex: isHidden(n.id) ? -1 : 0, role: 'button', 'aria-label': n.label + ', ' + n.kind + '. ' + (n.summary || ''), 'data-id': n.id, style: '--kc:' + kindColor(n.kind) });
       g.appendChild(s('title', {}, n.summary || n.label));
       g.appendChild(s('rect', { class: 'box', width: b.w, height: b.h, rx: 10 }));
       g.appendChild(s('rect', { class: 'bar', x: 0, y: 12, width: 5, height: b.h - 24, rx: 2.5 }));
       g.appendChild(s('text', { class: 'lbl', x: 18, y: 26 }, trunc(n.label, 23)));
-      var sub = (DIFF_MARK[n.diff] ? DIFF_MARK[n.diff] + ' ' : '') + n.kind + (n.tech && n.tech.length ? ' · ' + n.tech[0] : '');
+      var sub = (DIFF_MARK[n.diff] ? DIFF_MARK[n.diff] + ' ' : '') + (loopsOn && loopNodes[n.id] ? '↻ ' : '') + n.kind + (n.tech && n.tech.length ? ' · ' + n.tech[0] : '');
       g.appendChild(s('text', { class: 'sub', x: 18, y: 44 }, trunc(sub, 30)));
       g.addEventListener('click', function (ev) { ev.stopPropagation(); selectNode(n.id, false); });
       g.addEventListener('keydown', function (ev) {
@@ -273,7 +281,7 @@
       var i = h('i'); i.setAttribute('style', '--kc:' + kindColor(n.kind));
       legend.appendChild(h('span', {}, [i, document.createTextNode(n.kind)]));
     });
-    ['added', 'removed', 'changed'].forEach(function (d) {
+    ['added', 'removed', 'changed', 'moved'].forEach(function (d) {
       if (!nodes.some(function (n) { return n.diff === d; }) && !edges.some(function (e) { return e.diff === d; })) return;
       var k = h('i', { class: 'diff-key d-' + d, text: DIFF_MARK[d] });
       legend.appendChild(h('span', {}, [k, document.createTextNode(d)]));
@@ -282,10 +290,11 @@
       var hl = h('i', { class: 'http-key' });
       legend.appendChild(h('span', {}, [hl, document.createTextNode('HTTP request')]));
     }
+    drawMinimap();
   }
 
   // ---------- camera ----------
-  function applyView() { svg.setAttribute('viewBox', [view.x, view.y, view.w, view.h].join(' ')); }
+  function applyView() { svg.setAttribute('viewBox', [view.x, view.y, view.w, view.h].join(' ')); syncMinimap(); }
   function bbox(ids) {
     var x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
     ids.forEach(function (id) { var b = boxes[id]; if (!b) return; x1 = Math.min(x1, b.x); y1 = Math.min(y1, b.y); x2 = Math.max(x2, b.x + b.w); y2 = Math.max(y2, b.y + b.h); });
@@ -299,6 +308,57 @@
     tweenTo(bb.x + bb.w / 2 - cw / sc / 2, bb.y + bb.h / 2 - ch / sc / 2, cw / sc, ch / sc, true);
     userMoved = false;
   }
+  // ---------- minimap ----------
+  // A small overview of the whole diagram with the visible region as a rectangle; click or drag it to move the camera. It is a
+  // pointer convenience only (decorative for assistive technology, no tab stops), it follows every camera change because they all go
+  // through applyView(), it is redrawn with the diagram (so collapsed lanes show as their one chip), and it is hidden while the
+  // whole diagram is already on screen.
+  var minimap = $('minimap'), mmSvg = null, mmView = null, mmFit = null;
+  function drawMinimap() {
+    if (!minimap) return;
+    minimap.replaceChildren(); mmSvg = mmView = mmFit = null;
+    var bb = bbox(Object.keys(boxes));
+    if (!bb) { minimap.hidden = true; return; }
+    var pad = 30, vb = { x: bb.x - pad, y: bb.y - pad, w: bb.w + 2 * pad, h: bb.h + 2 * pad };
+    mmFit = bb;
+    mmSvg = s('svg', { viewBox: [vb.x, vb.y, vb.w, vb.h].join(' '), preserveAspectRatio: 'xMidYMid meet', focusable: 'false' });
+    var seen = {};
+    nodes.forEach(function (n) {
+      var b = boxes[n.id]; if (!b) return;
+      var key = b.x + ',' + b.y; if (seen[key]) return; seen[key] = 1;  // a collapsed lane's members share one box
+      mmSvg.appendChild(s('rect', { class: 'mm-node' + diffClass(n), x: b.x, y: b.y, width: b.w, height: b.h, rx: 8, style: '--kc:' + kindColor(n.kind) }));
+    });
+    mmView = s('rect', { class: 'mm-view' });
+    mmSvg.appendChild(mmView);
+    minimap.appendChild(mmSvg);
+    var mw = 168, mh = Math.max(56, Math.min(130, Math.round(mw * vb.h / vb.w)));
+    minimap.style.width = mw + 'px'; minimap.style.height = mh + 'px';
+    syncMinimap();
+  }
+  function syncMinimap() {
+    if (!minimap || !mmView || !mmFit) return;
+    var f = mmFit, eps = 2;
+    var allVisible = view.x <= f.x + eps && view.y <= f.y + eps && view.x + view.w >= f.x + f.w - eps && view.y + view.h >= f.y + f.h - eps;
+    minimap.hidden = allVisible;
+    canvas.classList.toggle('has-minimap', !allVisible);
+    if (allVisible) return;
+    mmView.setAttribute('x', view.x); mmView.setAttribute('y', view.y); mmView.setAttribute('width', view.w); mmView.setAttribute('height', view.h);
+  }
+  (function minimapPointer() {
+    if (!minimap) return;
+    var dragging = false;
+    function moveTo(e) {
+      var ctm = mmSvg && mmSvg.getScreenCTM && mmSvg.getScreenCTM(); if (!ctm) return;
+      var p = new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm.inverse());
+      tweenId++; userMoved = true;
+      view.x = p.x - view.w / 2; view.y = p.y - view.h / 2; applyView();
+    }
+    minimap.addEventListener('pointerdown', function (e) { dragging = true; minimap.setPointerCapture(e.pointerId); e.preventDefault(); moveTo(e); });
+    minimap.addEventListener('pointermove', function (e) { if (dragging) moveTo(e); });
+    function end() { dragging = false; }
+    minimap.addEventListener('pointerup', end); minimap.addEventListener('pointercancel', end);
+    minimap.addEventListener('wheel', function (e) { e.preventDefault(); zoom(e.deltaY < 0 ? 1.15 : 1 / 1.15); }, { passive: false });
+  })();
   // Smoothly move the camera (instant when the user prefers reduced motion or on first paint).
   var tweenId = 0;
   function tweenTo(x, y, w, h, instant) {
@@ -494,8 +554,8 @@
   }
 
   // ---------- comparison marks (architecture diff) ----------
-  var DIFF_MARK = { added: '+', removed: '−', changed: '~' };
-  var DIFF_LABEL = { added: 'Added', removed: 'Removed', changed: 'Changed' };
+  var DIFF_MARK = { added: '+', removed: '−', changed: '~', moved: '→' };
+  var DIFF_LABEL = { added: 'Added', removed: 'Removed', changed: 'Changed', moved: 'Moved' };
   function diffClass(x) { return x.diff && x.diff !== 'same' ? ' d-' + x.diff : ''; }
 
   // ---------- detail panel ----------
@@ -868,6 +928,7 @@
     if (e.source !== window.parent || !e.data || typeof e.data !== 'object') return;
     if (typeof e.data.gvTheme === 'string') applyTheme(e.data.gvTheme, true);
     if (e.data.gvGoto && typeof e.data.gvGoto === 'object') gotoState(e.data.gvGoto);
+    if (typeof e.data.gvSelect === 'string' && byId[e.data.gvSelect]) selectNode(e.data.gvSelect, true); // the host reveals a component (VS Code: "where am I?")
   });
   applyTheme(store('theme') || 'auto', true);
 
@@ -885,6 +946,19 @@
   }
   $('palette-btn').addEventListener('click', function () { applyPalette(palette === 'cb' ? 'default' : 'cb'); });
   applyPalette(palette, true);
+
+  // ---------- circular dependencies toggle ----------
+  function applyLoops(on, initial) {
+    loopsOn = hasLoops && on;
+    var b = $('loops-btn');
+    b.hidden = !hasLoops;
+    b.setAttribute('aria-pressed', loopsOn ? 'true' : 'false');
+    b.setAttribute('aria-label', 'Circular dependencies: ' + (loopsOn ? 'highlighted' : 'not highlighted') + '. Click to ' + (loopsOn ? 'hide' : 'highlight') + ' them.');
+    b.textContent = '↻ Loops' + (loopsOn ? ': on' : '');
+    if (!initial) { store('loops', loopsOn ? '1' : '0'); render(); applyState(); runSearch(); }
+  }
+  $('loops-btn').addEventListener('click', function () { applyLoops(!loopsOn); });
+  applyLoops(loopsOn, true);
 
   // ---------- keyboard shortcuts overlay ----------
   // The single source of truth for what the global key handler below actually does.
@@ -1009,4 +1083,5 @@
   $('follow').addEventListener('change', function (e) { S.follow = e.target.checked; store('follow', S.follow ? '1' : '0'); if (S.follow) cameraForStep(); else fit(); });
   var hm = /[#&]flow=([^&]+)&step=(\d+)/.exec(location.hash); // standalone deep link
   if (hm) gotoState({ flow: decodeURIComponent(hm[1]), step: Number(hm[2]) });
+  if (vscodeApi) vscodeApi.postMessage({ type: 'ready' }); // a host that wants to send gvSelect waits for this
 })();

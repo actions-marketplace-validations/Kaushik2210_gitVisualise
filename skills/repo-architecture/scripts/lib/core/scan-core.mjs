@@ -166,27 +166,73 @@ const isCommentLine = (text, idx) => {
   return /^\s*(\/\/|\*|\/\*|#)/.test(text.slice(start, idx + 1));
 };
 
+/**
+ * Character ranges of JavaScript/TypeScript function bodies, so a `require()` inside one (run on call, not at load) can be told
+ * from one at module level. Strings, template literals and comments are skipped (regex literals are not specially handled, so a quote inside one can throw the scan off for the rest of that file, which only ever makes more imports count as load-time); a `{` opens a function body
+ * when it follows `)` or `=>` and the parenthesis was not an `if`/`for`/`while`/`switch`/`catch`/`with` head. Anything it cannot
+ * classify counts as not-a-function, so the worst case is a loop that is still reported.
+ */
+export function jsFunctionRanges(text) {
+  const ranges = [], braces = [], parens = [];
+  let lastParen = null; // { word, end } of the most recent `( ... )`
+  const BLOCK_HEAD = /^(?:if|for|while|switch|catch|with)$/;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i], d = text[i + 1];
+    if (c === '/' && d === '/') { i = text.indexOf('\n', i); if (i < 0) break; continue; }
+    if (c === '/' && d === '*') { i = text.indexOf('*/', i + 2); if (i < 0) break; i++; continue; }
+    if (c === '"' || c === "'" || c === '`') {
+      for (i++; i < text.length && text[i] !== c; i++) { if (text[i] === '\\') i++; else if (c !== '`' && text[i] === '\n') break; }
+      continue;
+    }
+    if (c === '(') {
+      const word = /([A-Za-z_$][\w$]*)\s*$/.exec(text.slice(Math.max(0, i - 40), i));
+      parens.push({ word: word ? word[1] : '' });
+    } else if (c === ')') {
+      const p = parens.pop();
+      lastParen = p ? { word: p.word, end: i + 1 } : null;
+    } else if (c === '{') {
+      const before = text.slice(lastParen ? lastParen.end : Math.max(0, i - 40), i);
+      let fn = false;
+      if (/=>\s*$/.test(text.slice(Math.max(0, i - 40), i))) fn = true;
+      else if (lastParen && lastParen.end <= i && /^[\s:\w<>\[\],.|&?'"]*$/.test(before) && !BLOCK_HEAD.test(lastParen.word)) fn = true;
+      braces.push({ fn, start: i });
+      lastParen = null;
+    } else if (c === '}') {
+      const b = braces.pop();
+      if (b && b.fn) ranges.push([b.start, i]);
+    } else if (c === ';') lastParen = null;
+  }
+  for (const b of braces) if (b.fn) ranges.push([b.start, text.length]); // an unclosed body (truncated file)
+  return ranges;
+}
+
 function jsImports(text, ext) {
   const out = [];
   const seen = new Set();
-  const add = (spec, idx, names) => {
+  const add = (spec, idx, names, deferred) => {
     if (isCommentLine(text, idx)) return;
     const line = lineAt(text, idx);
     const key = spec + '@' + line;
     if (seen.has(key)) return;
     seen.add(key);
-    out.push({ spec, line, names: names || [] });
+    out.push({ spec, line, names: names || [], ...(deferred ? { deferred } : {}) });
   };
   let m;
-  const re1 = /(?:^|[\s;])(?:import|export)\s+(?:type\s+)?(?:([^'";]*?)\s+from\s+)?['"]([^'"]+)['"]/g;
+  // `import type ...` is erased at build time, so it never runs: it is not a load-time dependency.
+  const re1 = /(?:^|[\s;])(?:import|export)\s+(type\s+)?(?:([^'";]*?)\s+from\s+)?['"]([^'"]+)['"]/g;
   while ((m = re1.exec(text))) {
-    const names = (m[1] || '').replace(/[{}*]/g, ' ').split(/[\s,]+/).filter((s) => s && s !== 'as' && s !== 'type');
-    add(m[2], m.index + (m[0].match(/^\s/) ? 1 : 0), names);
+    const names = (m[2] || '').replace(/[{}*]/g, ' ').split(/[\s,]+/).filter((s) => s && s !== 'as' && s !== 'type');
+    add(m[3], m.index + (m[0].match(/^\s/) ? 1 : 0), names, m[1] ? 'type' : undefined);
   }
   const re2 = /\brequire\(\s*['"]([^'"]+)['"]\s*\)/g;
-  while ((m = re2.exec(text))) add(m[1], m.index);
+  let fnRanges = null; // computed only if the file has a require() at all
+  while ((m = re2.exec(text))) {
+    fnRanges = fnRanges || jsFunctionRanges(text);
+    const at = m.index;
+    add(m[1], at, [], fnRanges.some(([s, e]) => at > s && at < e) ? 'lazy' : undefined); // require() inside a function runs on call
+  }
   const re3 = /\bimport\(\s*['"]([^'"]+)['"]\s*\)/g;
-  while ((m = re3.exec(text))) add(m[1], m.index);
+  while ((m = re3.exec(text))) add(m[1], m.index, [], 'lazy'); // import(): loaded on demand, after startup
   if (ext === 'html') {
     const re4 = /<script[^>]*\ssrc=["']([^"']+)["']/gi;
     while ((m = re4.exec(text))) out.push({ spec: m[1], line: lineAt(text, m.index), names: [] });
@@ -194,18 +240,61 @@ function jsImports(text, ext) {
   return out;
 }
 
+// Imports that do not run when the module loads, by line number: 'type' inside `if TYPE_CHECKING:` (any alias, e.g.
+// `typing.` or `t.`; they exist only for type checkers) and 'lazy' inside a function body (run when it is called).
+function pyDeferredLines(text) {
+  const out = new Map();
+  const lines = text.split('\n');
+  const stack = []; // enclosing blocks, by indent: { indent, kind: 'def' | 'typing' | 'block' }
+  const strings = pyStringLines(text);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim() || /^\s*#/.test(line) || strings.has(i + 1)) continue;
+    if (/^\s*[)\]}]/.test(line)) continue; // the closing bracket of a multi-line signature or call sits at the header's indent
+    const indent = line.match(/^[ \t]*/)[0].length;
+    while (stack.length && stack[stack.length - 1].indent >= indent) stack.pop();
+    if (stack.some((b) => b.kind === 'typing')) out.set(i + 1, 'type');
+    else if (stack.some((b) => b.kind === 'def')) out.set(i + 1, 'lazy');
+    if (/^\s*(?:async\s+)?def\s/.test(line)) stack.push({ indent, kind: 'def' });
+    else if (/^\s*if\s+(?:[\w.]+\.)?TYPE_CHECKING\s*:/.test(line)) stack.push({ indent, kind: 'typing' });
+    else if (/^\s*(?:class|if|elif|else|try|except|finally|for|while|with)\b.*:\s*(?:#.*)?$/.test(line)) stack.push({ indent, kind: 'block' });
+  }
+  return out;
+}
+
+// Line numbers that are inside a triple-quoted string (docstrings and examples in them: `from x import y` there is text, not code).
+function pyStringLines(text) {
+  const inside = new Set();
+  const lines = text.split('\n');
+  let open = null; // the delimiter of the string we are inside, if any
+  for (let i = 0; i < lines.length; i++) {
+    const startedInside = open !== null;
+    const re = /("""|''')/g;
+    let m;
+    while ((m = re.exec(lines[i]))) open = open === null ? m[1] : (open === m[1] ? null : open);
+    if (startedInside) inside.add(i + 1);
+  }
+  return inside;
+}
+
 function pyImports(text) {
   const out = [];
   let m;
+  const deferred = pyDeferredLines(text);
+  const strings = pyStringLines(text);
+  const mark = (line) => (deferred.has(line) ? { deferred: deferred.get(line) } : {});
   const re = /^[ \t]*from\s+([.\w]+)\s+import\s+([^\n#]+)/gm;
   while ((m = re.exec(text))) {
-    out.push({ spec: m[1], line: lineAt(text, m.index), names: m[2].replace(/[()]/g, '').split(',').map((s) => s.trim().split(/\s+as\s+/)[0]).filter(Boolean), py: true });
+    const line = lineAt(text, m.index);
+    if (strings.has(line)) continue;
+    out.push({ spec: m[1], line, names: m[2].replace(/[()]/g, '').split(',').map((s) => s.trim().split(/\s+as\s+/)[0]).filter(Boolean), py: true, ...mark(line) });
   }
   const re2 = /^[ \t]*import\s+([\w., ]+)/gm;
   while ((m = re2.exec(text))) {
+    if (strings.has(lineAt(text, m.index))) continue;
     for (const mod of m[1].split(',')) {
       const name = mod.trim().split(/\s+as\s+/)[0];
-      if (name) out.push({ spec: name, line: lineAt(text, m.index), names: [], py: true });
+      if (name) { const line = lineAt(text, m.index); out.push({ spec: name, line, names: [], py: true, ...mark(line) }); }
     }
   }
   return out;
